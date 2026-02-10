@@ -53,72 +53,53 @@ def video_feed():
 
 @app.route('/status')
 def status():
+    # 1. Get thread-safe snapshot from Inference
+    ui_state = recognizer.get_ui_state()
+    
+    # 2. Get local prediction state (thread-safe via app lock)
     with lock:
-        # Get pending sentence
-        sentence_to_speak = recognizer.last_sentence
+        pred_text = current_prediction["text"]
+        pred_conf = current_prediction["confidence"]
+        
+        sentence_to_speak = ui_state["sentence"]
         audio_data = None
         
-        # Logic FIX: Use Update ID to track new events
-        current_id = getattr(recognizer, 'last_update_id', 0)
+        current_id = ui_state["last_update_id"]
         last_id = getattr(recognizer, 'last_spoken_id', -1)
         
-        last_id = getattr(recognizer, 'last_spoken_id', -1)
+        # Check if this sentence is NEW (ID changed)
+        # AND not in collection mode
+        is_collecting = ui_state["collection_stats"]["mode"]
         
-            # Check if this sentence is NEW (ID changed)
-        # CRITICAL FIX: Do NOT generate speech if in Collection Mode
-        if current_id != last_id and sentence_to_speak and not recognizer.collection_mode:
-             # Audio is now generated in background thread in inference.py
-             # We just retrieve it here if available
-             if recognizer.last_audio:
-                 audio_data = recognizer.last_audio
+        if current_id != last_id and sentence_to_speak and not is_collecting:
+             if ui_state["audio"]:
+                 audio_data = ui_state["audio"]
                  print(f"Sending Pre-generated Audio for: {sentence_to_speak} (ID: {current_id})")
              else:
                  print(f"Audio not ready yet for: {sentence_to_speak} (ID: {current_id})")
             
              recognizer.last_spoken_id = current_id # Mark this ID as processed
             
-        response = {
-            "text": current_prediction["text"],
-            "confidence": float(current_prediction["confidence"]),
-            "sentence": sentence_to_speak,
-            
-             # New Fields for UI
-            "buffer": recognizer.gesture_buffer.get_current_buffer(),
-            "english_text": recognizer.last_english_sentence if recognizer.last_english_sentence else "...",
-            "translated_text": recognizer.last_sentence if recognizer.last_sentence else "...",
-            "target_language": recognizer.target_language,
-            "language": recognizer.target_language,
-            "audio": audio_data,
-            
-            # State Flags for UI Sync
-            "speech_enabled": recognizer.speech_enabled,
+    response = {
+        "text": pred_text,
+        "confidence": float(pred_conf),
+        "sentence": sentence_to_speak,
+        
+        # New Fields from Snapshot
+        "buffer": ui_state["buffer"],
+        "english_text": str(ui_state["english_text"]),
+        "translated_text": str(ui_state["sentence"]),
+        "target_language": ui_state["target_language"],
+        "language": ui_state["target_language"],
+        "audio": audio_data,
+        
+        # State Flags for UI Sync
+        "speech_enabled": ui_state["speech_enabled"],
 
-             # Data Collection Stats
-            "collection_stats": recognizer.get_collection_stats()
-        }
-        return jsonify(response)
-
-@app.route('/toggle_speech', methods=['POST'])
-def toggle_speech():
-    data = request.json
-    enabled = data.get('enabled', True)
-    recognizer.set_speech_enabled(enabled)
-    return jsonify({"status": "success", "enabled": enabled})
-
-@app.route('/set_mode', methods=['POST'])
-def set_mode():
-    data = request.json
-    mode = data.get('mode', 'live')
-    recognizer.set_mode(mode)
-    return jsonify({"status": "success", "mode": mode})
-
-@app.route('/toggle_collection', methods=['POST'])
-def toggle_collection():
-    data = request.json
-    enabled = data.get('enabled', False)
-    recognizer.set_collection_mode(enabled)
-    return jsonify({"status": "success", "enabled": enabled})
-
+        # Data Collection Stats
+        "collection_stats": ui_state["collection_stats"]
+    }
+    return jsonify(response)
 
 @app.route('/set_language', methods=['POST'])
 def set_language():
@@ -127,34 +108,37 @@ def set_language():
     recognizer.set_language(language)
     return jsonify({"status": "success", "language": language})
 
+@app.route('/toggle_speech', methods=['POST'])
+def toggle_speech():
+    data = request.json
+    enabled = data.get('enabled', True)
+    recognizer.set_speech_enabled(enabled)
+    return jsonify({"status": "success", "enabled": enabled})
+
+@app.route('/toggle_collection', methods=['POST'])
+def toggle_collection():
+    data = request.json
+    enabled = data.get('enabled', False)
+    recognizer.set_collection_mode(enabled)
+    return jsonify({"status": "success", "mode": "collection" if enabled else "live"})
+
 @app.route('/simulate_input', methods=['POST'])
 def simulate_input():
     data = request.json
     text = data.get('text', '')
     if text:
-        # Move outside lock to avoid blocking /status during API calls
-        result = recognizer.simulate_text(text)
-        return jsonify({"status": "success", "processed": result})
-    return jsonify({"status": "error", "message": "Empty text"})
+        recognizer.simulate_text(text)
+    return jsonify({"status": "success", "text": text})
 
 @app.route('/test_audio', methods=['POST'])
 def test_audio():
-    # Force English test sound
-    text = "System Audio Check. Speakers are working."
-    audio_data = generate_audio(text, "English")
-    
-    # Manually trigger audio update via status loop (optional) or just return success
-    # For now, let's just speak it via the status loop hack or return it directly?
-    # The frontend expects a void return and relies on separate play mechanism? 
-    # WAIT: Frontend's testAudio function calls this but doesn't handle response to play audio. 
-    # Frontend logic: fetch('/test_audio', { method: 'POST' }); 
-    # It expects nothing. But maybe we should inject it into the status loop?
-    
-    
-    # Store in last_sentence too (so status loop sees it? No, avoid double speech)
-    # recognizer.last_sentence = text # Commented out to prevent double-speak
-    
-    return jsonify({"status": "success", "audio": audio_data})
+    # Generate a simple test sound (e.g., "Hello, system check.")
+    try:
+        from src.tts import generate_audio
+        audio_data = generate_audio("System check. Audio operational.", "English")
+        return jsonify({"status": "success", "audio": audio_data})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)})
 
 if __name__ == '__main__':
-    app.run(debug=True, use_reloader=False) 
+    app.run(debug=True, threaded=True)

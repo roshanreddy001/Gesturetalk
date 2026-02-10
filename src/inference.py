@@ -11,7 +11,11 @@ import time
 import csv
 from src.offline_dict import get_offline_translation
 from src.riva_client import RivaTranslator
+from src.offline_dict import get_offline_translation
+from src.riva_client import RivaTranslator
 from src.text_processor import TextProcessor
+from src.video_preprocessor import VideoPreprocessor
+from collections import deque, Counter
 
 
 class DataCollectionState(Enum):
@@ -22,7 +26,12 @@ class DataCollectionState(Enum):
 
 # Constants
 MODELS_DIR = os.path.join(os.path.dirname(__file__), '..', 'models')
-MODEL_PATH = os.path.join(MODELS_DIR, 'gesture_model.h5')
+# We now use the TFLite model from the data directory (or models dir if moved)
+# train_model.py saves to data/gesture_model.tflite usually, let's update this to match
+# Actually, train_model.py had TFLite path as .../data/gesture_model.tflite but updated 
+# version saves to MODELS_DIR? Let's check train_model.py output logic.
+# It saves to MODELS_DIR/gesture_model.tflite.
+MODEL_PATH = os.path.join(MODELS_DIR, 'gesture_model.tflite')
 
 # Define gestures mapping (Must match data collection)
 GESTURES = {
@@ -175,18 +184,28 @@ class GestureBuffer:
 
 class GestureRecognizer:
     def __init__(self):
-        self.model = None
+        self.interpreter = None
+        self.input_details = None
+        self.output_details = None
         
+        # Load TFLite Model
         if os.path.exists(MODEL_PATH):
             try:
-                self.model = tf.keras.models.load_model(MODEL_PATH)
-                print("Keras Model loaded successfully.")
+                self.interpreter = tf.lite.Interpreter(model_path=MODEL_PATH)
+                self.interpreter.allocate_tensors()
+                self.input_details = self.interpreter.get_input_details()
+                self.output_details = self.interpreter.get_output_details()
+                print(f"TFLite Model loaded from {MODEL_PATH}")
             except Exception as e:
-                print(f"Error loading Keras model: {e}")
-                self.model = None
+                print(f"Error loading TFLite model: {e}")
+                self.interpreter = None
         else:
             print(f"Warning: Model not found at {MODEL_PATH}")
 
+        # Components
+        self.preprocessor = VideoPreprocessor(sequence_length=10) # Stateful buffer
+        self.prediction_buffer = deque(maxlen=5) # Smoothing buffer
+        
         self.mp_hands = mp.solutions.hands
         self.mp_face_mesh = mp.solutions.face_mesh
         self.mp_drawing = mp.solutions.drawing_utils
@@ -257,6 +276,9 @@ class GestureRecognizer:
 
         # Text Processor (Grammar & Custom Rules)
         self.text_processor = TextProcessor()
+        
+        # Thread Safety
+        self.lock = threading.Lock()
 
     def set_language(self, language):
         self.target_language = language
@@ -351,6 +373,20 @@ class GestureRecognizer:
         self.speech_enabled = enabled
         print(f"Speech Enabled: {self.speech_enabled}")
         
+    def get_ui_state(self):
+        """Thread-safe state snapshot for UI."""
+        with self.lock:
+            return {
+                "sentence": self.last_sentence,
+                "english_text": self.last_english_sentence,
+                "last_update_id": self.last_update_id,
+                "audio": self.last_audio,
+                "target_language": self.target_language,
+                "speech_enabled": self.speech_enabled,
+                "buffer": self.gesture_buffer.get_current_buffer(),
+                "collection_stats": self.get_collection_stats()
+            }
+
     def set_mode(self, mode):
         if mode in ["live", "practice"]:
             self.mode = mode
@@ -384,9 +420,10 @@ class GestureRecognizer:
             # Always translate (Riva or Offline)
             final_english, final_translated = self.translate_text(text)
             
-            # Update Text State
-            self.last_english_sentence = final_english
-            self.last_sentence = final_translated
+            # Update Text State (Thread-Safe)
+            with self.lock:
+                self.last_english_sentence = final_english
+                self.last_sentence = final_translated
             
             # B. AUDIO GENERATION
             # Only generate if not empty 
@@ -400,12 +437,15 @@ class GestureRecognizer:
                          
                     from src.tts import generate_audio
                     audio_data = generate_audio(final_translated, tts_lang)
-                    self.last_audio = audio_data
+                    
+                    with self.lock:
+                         self.last_audio = audio_data
                 except Exception as e:
                     print(f"Background TTS Error: {e}")
             
             # Notify UI of completion (Version 2: Final + Audio)
-            self.last_update_id += 1 
+            with self.lock:
+                self.last_update_id += 1 
             print(f"Background Update Complete: {final_translated}")
         # Spawn Thread
         threading.Thread(target=background_pipeline, daemon=True).start()
@@ -514,7 +554,7 @@ class GestureRecognizer:
 
         # Logic Loop
         if results.multi_hand_landmarks and results.multi_handedness:
-            hand_count = len(results.multi_hand_landmarks)
+            # hand_count = len(results.multi_hand_landmarks) # Unused
             
             left_hand_data = [0.0] * 42
             right_hand_data = [0.0] * 42
@@ -536,53 +576,58 @@ class GestureRecognizer:
                 else:
                     right_hand_data = flat_landmarks
 
-            if self.model:
-                input_vector = left_hand_data + right_hand_data
-                # Prepare TFLite input
-                input_data = np.array([input_vector], dtype=np.float32)
+            # Merge for Preprocessor (84 features)
+            raw_features = left_hand_data + right_hand_data
+            
+            # --- START NEW TFLITE LOGIC ---
+            if self.interpreter:
+                # 1. Preprocess & Temporal Buffer
+                # returns (1, 10, 84) if ready, else None
+                sequence_input = self.preprocessor.process_frame(raw_features, stateful=True)
                 
-                # Only predict if data exists
-                if any(v != 0 for v in input_vector):
+                if sequence_input is not None:
+                    # 2. Run Inference
                     try:
-                        # Safety: Ensure 84 features
-                        if input_data.shape[1] != 84:
-                             # Silent fix or skip
-                             pass
+                        self.interpreter.set_tensor(self.input_details[0]['index'], sequence_input.astype(np.float32))
+                        self.interpreter.invoke()
+                        output_data = self.interpreter.get_tensor(self.output_details[0]['index'])
+                        
+                        # 3. Prediction & Smoothing
+                        class_id = np.argmax(output_data[0])
+                        conf = float(output_data[0][class_id])
+                        
+                        if conf > 0.6: # Lower threshold, rely on smoothing
+                            self.prediction_buffer.append(class_id)
                         else:
-                            # OPTIMIZATION: Use __call__ instead of predict() for single-batch speed
-                            # training=False ensures inference mode (no dropout etc)
-                            prediction = self.model(input_data, training=False).numpy()
-                            class_id = np.argmax(prediction)
-                            conf = np.max(prediction)
-
-                            if conf > 0.8:
-                                # print(f"DEBUG: Hand Detected. Class: {class_id}, Conf: {conf:.2f}")
-                                label_text = GESTURES.get(class_id, "Unknown")
-                                self.prediction_history.append(label_text)
-                            else:
-                                print(f"DEBUG: Low Confidence: {conf:.2f}")
+                            # If low confidence, maybe append None or keep existing buffer?
+                            # For now, just ignore weak frames
+                            pass
                             
-                            if len(self.prediction_history) > self.history_length:
-                                most_common = max(set(self.prediction_history), key=self.prediction_history.count)
-                                if self.prediction_history.count(most_common) >= self.history_length - 1:
-                                    current_gesture = most_common
-                                    confidence = float(conf)
+                        # Majority Vote Smoothing
+                        if len(self.prediction_buffer) == self.prediction_buffer.maxlen:
+                            counts = Counter(self.prediction_buffer)
+                            most_common_id, count = counts.most_common(1)[0]
+                            
+                            # Require 3/5 consistency
+                            if count >= 3:
+                                current_gesture = GESTURES.get(most_common_id, "Unknown")
+                                confidence = conf
+                                
+                                predicted_text += f"\nDetected: {current_gesture} ({conf:.2f})"
+                                
+                                if self.mode == "live":
+                                    self.gesture_buffer.add_gesture(current_gesture, emotion, hand_count=1)
                                     
-                                    predicted_text += f"\nDetected: {current_gesture}"
-
-                                    if self.mode == "live":
-                                        # Buffer gesture (Silent phase)
-                                        self.gesture_buffer.add_gesture(current_gesture, emotion, hand_count)
+                                    # Update display with buffer content
+                                    buffered_text = self.gesture_buffer.get_current_buffer()
+                                    if buffered_text:
+                                        predicted_text += f"\nBuilding: {buffered_text}"
                                         
-                                        # Update display with buffer content
-                                        buffered_text = self.gesture_buffer.get_current_buffer()
-                                        if buffered_text:
-                                            predicted_text += f"\nBuilding: {buffered_text}"
-                                            
-                                    else:
-                                        predicted_text += f"\nDETECTED: {current_gesture}"
                     except Exception as e:
-                        print(f"Pred Err: {e}")
+                        print(f"Inference Error: {e}")
+            # --- END NEW TFLITE LOGIC ---
+                                            
+
             
             # Update hands visible time
             self.last_hands_visible_time = time.time()

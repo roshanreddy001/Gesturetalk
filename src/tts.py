@@ -8,6 +8,11 @@ import io
 import base64
 import os
 import wave
+import threading
+
+# Global lock for TTS engine (pyttsx3 is not thread-safe)
+tts_lock = threading.Lock()
+
 try:
     from src.riva_client import RivaTTS
     riva_tts = RivaTTS()
@@ -141,10 +146,12 @@ def generate_offline_audio(text):
         return None
     
     try:
-        # Save to temp file
-        temp_file = "temp_speech.mp3"
-        offline_engine.save_to_file(text, temp_file)
-        offline_engine.runAndWait()
+        # Thread-safe access to engine
+        with tts_lock:
+            # Save to temp file
+            temp_file = "temp_speech.mp3"
+            offline_engine.save_to_file(text, temp_file)
+            offline_engine.runAndWait()
         
         # Read bytes
         with open(temp_file, "rb") as f:

@@ -877,6 +877,26 @@
                 <div class="video-wrapper">
                     <img src="{{ url_for('video_feed') }}" class="video-feed" alt="Video Feed">
                     <div class="video-overlay">● LIVE</div>
+
+                    <!-- NEW: Confidence Score Overlay -->
+                    <div id="confidence-overlay" style="
+                        position: absolute;
+                        top: 20px;
+                        left: 20px;
+                        background: rgba(0, 0, 0, 0.6);
+                        backdrop-filter: blur(10px);
+                        -webkit-backdrop-filter: blur(10px);
+                        padding: 4px 12px;
+                        border-radius: 20px;
+                        border: 1px solid rgba(255, 255, 255, 0.1);
+                        color: rgba(255, 255, 255, 0.9);
+                        font-size: 0.75rem;
+                        font-weight: 600;
+                        z-index: 10;
+                        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+                        letter-spacing: 0.5px;
+                        pointer-events: none;
+                    ">Confidence: --%</div>
                 </div>
             </section>
 
@@ -996,7 +1016,19 @@
                         btn.className = speechEnabled ? "toggle-btn active" : "toggle-btn inactive";
                     }
 
+                    // UPDATE CONFIDENCE
+                    if (data.confidence !== undefined) {
+                        const confPercent = Math.round(data.confidence * 100);
+                        const confEl = document.getElementById('confidence-overlay');
+                        if (confEl) {
+                            confEl.innerText = `Confidence: ${confPercent}%`;
 
+                            // Optional: Color coding based on confidence
+                            if (confPercent > 80) confEl.style.color = "#00ff88"; // Green
+                            else if (confPercent > 50) confEl.style.color = "#ffb700"; // Orange
+                            else confEl.style.color = "#ff4444"; // Red
+                        }
+                    }
 
                     const stats = data.collection_stats;
 

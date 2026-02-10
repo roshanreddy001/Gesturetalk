@@ -1,96 +1,137 @@
-import pandas as pd
 import numpy as np
 import tensorflow as tf
-from tensorflow import keras
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv1D, GlobalAveragePooling1D, Dense, Dropout, BatchNormalization, Input
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.model_selection import train_test_split
 import os
 
-# Constants
-DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data')
-MODELS_DIR = os.path.join(os.path.dirname(__file__), '..', 'models')
-CSV_FILE = os.path.join(DATA_DIR, 'keypoints.csv')
-MODEL_PATH = os.path.join(MODELS_DIR, 'gesture_model.h5')
-TFLITE_MODEL_PATH = os.path.join(MODELS_DIR, 'gesture_model.tflite')
+# Config
+MODEL_DIR = os.path.join(BASE_DIR, '..', 'models')
+if not os.path.exists(MODEL_DIR):
+    os.makedirs(MODEL_DIR)
 
-if not os.path.exists(MODELS_DIR):
-    os.makedirs(MODELS_DIR)
+X_FILE = os.path.join(DATA_DIR, 'X_sequences.npy')
+Y_FILE = os.path.join(DATA_DIR, 'y_labels.npy')
+MODEL_PATH = os.path.join(MODEL_DIR, 'gesture_model.keras')
+TFLITE_MODEL_PATH = os.path.join(MODEL_DIR, 'gesture_model.tflite')
 
 def load_data():
-    print(f"DEBUG: Looking for data at: {os.path.abspath(CSV_FILE)}")
-    if not os.path.exists(CSV_FILE):
-        print(f"Error: Data file not found at {CSV_FILE}")
-        return None, None
+    if not os.path.exists(X_FILE) or not os.path.exists(Y_FILE):
+        print("Data files not found. Run synthesize_dataset.py first.")
+        return None, None, None
+        
+    X = np.load(X_FILE)
+    y = np.load(Y_FILE)
     
-    df = pd.read_csv(CSV_FILE)
-    X = df.iloc[:, :-1].values # All columns except last (features)
-    y = df.iloc[:, -1].values  # Last column (labels)
-    return X, y
+    # Num classes = max label + 1 (assuming 0-indexed)
+    num_classes = int(np.max(y) + 1)
+    
+    return X, y, num_classes
 
-def build_model(input_shape, num_classes):
-    model = keras.Sequential([
-        keras.layers.Input(shape=(input_shape,)),
-        keras.layers.Dense(128, activation='relu'),
-        keras.layers.Dropout(0.2),
-        keras.layers.Dense(64, activation='relu'),
-        keras.layers.Dropout(0.2),
-        keras.layers.Dense(32, activation='relu'),
-        keras.layers.Dense(num_classes, activation='softmax')
+def create_model(input_shape, num_classes):
+    model = Sequential([
+        Input(shape=input_shape),
+        
+        # Conv1D Layer 1: Spatial + Temporal features
+        Conv1D(128, kernel_size=3, padding='same', activation='relu', kernel_initializer='he_normal'),
+        BatchNormalization(),
+        Dropout(0.2), # Lightweight dropout
+        
+        # Conv1D Layer 2
+        Conv1D(64, kernel_size=3, padding='same', activation='relu', kernel_initializer='he_normal'),
+        BatchNormalization(),
+        Dropout(0.2),
+        
+        # Global Pooling to reduce parameters and handle variable length (if needed)
+        GlobalAveragePooling1D(),
+        
+        # Dense Output
+        Dense(64, activation='relu', kernel_initializer='he_normal'),
+        Dense(num_classes, activation='softmax')
     ])
     
-    model.compile(optimizer='adam',
-                  loss='sparse_categorical_crossentropy',
-                  metrics=['accuracy'])
+    model.compile(
+        optimizer='adam',
+        loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
+        metrics=['accuracy']
+    )
+    
     return model
 
-def main():
+def representative_data_gen():
+    """Generates data for INT8 quantization."""
+    # Load a small subset of data for calibration
+    # Ideally should use validation set, but loading everything here for simplicity
+    X = np.load(X_FILE)
+    # Take first 100 samples
+    for i in range(min(100, len(X))):
+        input_data = X[i].astype(np.float32)
+        input_data = np.expand_dims(input_data, axis=0) # Add batch dim
+        yield [input_data]
+
+def train_and_convert():
     print("Loading data...")
-    X, y = load_data()
-    if X is None:
-        return
+    X, y, num_classes = load_data()
+    if X is None: return
 
-    # Check if we have enough data
-    unique_classes = np.unique(y)
-    print(f"DEBUG: Found classes: {unique_classes}")
-    if len(unique_classes) < 2:
-        print("Error: Need at least 2 gesture classes to train.")
-        return
-
-    print(f"Data shape: {X.shape}, Labels: {y.shape}")
+    print(f"Data shape: {X.shape}, Labels: {y.shape}, Classes: {num_classes}")
     
-    # Split data
+    # Train/Test Split
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    # Build model
-    # Build model
-    # Note: input_shape will be 42 (1 hand * 21 points * 2 coords)
-    
-    # Ensure output layer covers all potential classes (0-35)
-    # If using sparse_categorical_crossentropy, we need neurons = max_label_index + 1
-    num_classes = max(np.max(y) + 1, 34)
-    
-    model = build_model(X.shape[1], num_classes)
+    # Create Model
+    # Input shape: (TimeSteps, Features) -> (10, 84)
+    model = create_model(input_shape=(X.shape[1], X.shape[2]), num_classes=num_classes)
     model.summary()
+    
+    # Callbacks
+    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-5)
     
     # Train
     print("Starting training...")
-    history = model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test))
+    history = model.fit(
+        X_train, y_train,
+        epochs=50,
+        batch_size=32,
+        validation_data=(X_test, y_test),
+        callbacks=[early_stopping, reduce_lr]
+    )
     
-    # Evaluate
-    loss, acc = model.evaluate(X_test, y_test)
-    print(f"Test Accuracy: {acc:.4f}")
-    
-    # Save
+    # Save Keras Model
+    print(f"Saving model to {MODEL_PATH}")
     model.save(MODEL_PATH)
-    print(f"Model saved to {MODEL_PATH}")
-
-    # Convert to TFLite
+    
+    # TFLite Conversion
     print("Converting to TFLite...")
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    tflite_model = converter.convert()
+    
+    # Optimizations
+    converter.optimizations = [tf.lite.Optimize.DEFAULT]
+    
+    # Representative Dataset for INT8 Quantization
+    # This requires the model inputs to be Float32, but weights to be INT8
+    # For full integer quantization, we need more config, but 'DEFAULT' + rep dataset 
+    # gives dynamic range quantization + some int8 weights.
+    # To enforce full INT8 input/output, we'd need:
+    # converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
+    # converter.inference_input_type = tf.int8
+    # converter.inference_output_type = tf.int8
+    # But let's stick to hybrid/dynamic first for compatibility.
+    
+    converter.representative_dataset = representative_data_gen
+    
+    try:
+        tflite_model = converter.convert()
+        
+        with open(TFLITE_MODEL_PATH, 'wb') as f:
+            f.write(tflite_model)
+        print(f"Saved TFLite model to {TFLITE_MODEL_PATH}")
+        print(f"TFLite Model Size: {len(tflite_model) / 1024:.2f} KB")
+        
+    except Exception as e:
+        print(f"Error converting to TFLite: {e}")
 
-    with open(TFLITE_MODEL_PATH, 'wb') as f:
-        f.write(tflite_model)
-    print(f"TFLite Model saved to {TFLITE_MODEL_PATH}")
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__":
+    train_and_convert()

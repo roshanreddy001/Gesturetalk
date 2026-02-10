@@ -184,8 +184,18 @@ def main():
             current_label_id = (current_label_id + 1) % len(GESTURES)
         elif key == ord('p'):
             current_label_id = (current_label_id - 1) % len(GESTURES)
+        elif key == ord('r'): # Toggle Recording
+            rec_mode = not rec_mode
+            print(f"Recording: {rec_mode}")
         elif key == 32: # SPACE
+             # Still allow single frame capture if needed, 
+             # but recommend 'r' for temporal data
             save_instance(results, current_label_id)
+
+        # Continuous Recording
+        if rec_mode:
+            save_instance(results, current_label_id)
+            cv2.putText(frame, "RECORDING...", (400, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
         
     cap.release()
     cv2.destroyAllWindows()
