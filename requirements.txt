@@ -1,12 +1,25 @@
+# Core ML & Vision
 tensorflow==2.15.0
 mediapipe==0.10.14
 opencv-python==4.13.0.90
-flask==3.1.2
-nvidia-riva-client==2.24.0
-pyttsx3==2.99
-gtts
-language-tool-python==3.2.2
 numpy==1.26.4
-pandas==2.3.3
 scikit-learn==1.7.2
+pandas==2.3.3
+
+# Web Framework
+flask==3.1.2
+
+# NVIDIA Riva (NMT + TTS)
+nvidia-riva-client==2.24.0
+grpcio==1.67.1
 protobuf==5.29.6
+
+# Translation (Google Translate fallback for unsupported languages)
+deep-translator==1.11.4
+
+# Text-to-Speech
+gtts
+pyttsx3==2.99
+
+# Grammar & Text Processing
+language-tool-python==3.2.2
