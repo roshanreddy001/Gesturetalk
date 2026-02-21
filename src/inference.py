@@ -1,7 +1,7 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-import tflite_runtime.interpreter as tflite
+import tflite_runtime.interpreter as tf
 import os
 import pyttsx3
 import threading
