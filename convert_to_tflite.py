@@ -3,7 +3,7 @@ import os
 
 # Define paths
 MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
-MODEL_PATH = os.path.join(MODELS_DIR, 'gesture_model.h5')
+MODEL_PATH = os.path.join(MODELS_DIR, 'gesture_model.keras')
 TFLITE_MODEL_PATH = os.path.join(MODELS_DIR, 'gesture_model.tflite')
 
 def convert_model():

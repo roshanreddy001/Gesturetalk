@@ -7,6 +7,8 @@ from sklearn.model_selection import train_test_split
 import os
 
 # Config
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, '..', 'data')
 MODEL_DIR = os.path.join(BASE_DIR, '..', 'models')
 if not os.path.exists(MODEL_DIR):
     os.makedirs(MODEL_DIR)

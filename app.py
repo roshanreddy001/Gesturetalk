@@ -108,6 +108,21 @@ def set_language():
     recognizer.set_language(language)
     return jsonify({"status": "success", "language": language})
 
+@app.route('/translate')
+def translate_debug():
+    """Debug endpoint: /translate?text=Hello&lang=Gujarati"""
+    text = request.args.get('text', 'Hello there')
+    lang = request.args.get('lang', 'Gujarati')
+    recognizer.set_language(lang)
+    english, translated = recognizer.translate_text(text)
+    return jsonify({
+        "input": text,
+        "language": lang,
+        "english": english,
+        "translated": translated,
+        "success": translated != text
+    })
+
 @app.route('/toggle_speech', methods=['POST'])
 def toggle_speech():
     data = request.json
@@ -126,9 +141,14 @@ def toggle_collection():
 def simulate_input():
     data = request.json
     text = data.get('text', '')
+    # Always sync language from the browser's current selection
+    language = data.get('language', None)
+    if language:
+        recognizer.set_language(language)
+        print(f"[simulate_input] Language set to: {language}")
     if text:
         recognizer.simulate_text(text)
-    return jsonify({"status": "success", "text": text})
+    return jsonify({"status": "success", "text": text, "language": language})
 
 @app.route('/test_audio', methods=['POST'])
 def test_audio():

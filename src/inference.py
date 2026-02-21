@@ -7,10 +7,7 @@ import pyttsx3
 import threading
 from enum import Enum
 import time
-import time
 import csv
-from src.offline_dict import get_offline_translation
-from src.riva_client import RivaTranslator
 from src.offline_dict import get_offline_translation
 from src.riva_client import RivaTranslator
 from src.text_processor import TextProcessor
@@ -259,20 +256,9 @@ class GestureRecognizer:
              self.riva_translator = RivaTranslator()
         except Exception as e:
              print(f"Warning: Failed to initialize Riva: {e}")
-
-        # Gemini Text Enhancement (Legacy/Fallback - User requested change)
-        self.enhancement_enabled = True # Always Enable for Riva (as per request)
-
+             self.riva_translator = None
 
         self.target_language = "English"
-        
-        # Initialize Riva Translator
-        try:
-            self.riva_translator = RivaTranslator()
-        except Exception as e:
-            print(f"Riva Init Warning: {e}")
-            print(f"Riva Init Warning: {e}")
-            self.riva_translator = None
 
         # Text Processor (Grammar & Custom Rules)
         self.text_processor = TextProcessor()
@@ -284,32 +270,92 @@ class GestureRecognizer:
         self.target_language = language
         print(f"Target Language set to: {self.target_language}")
 
+    # Languages that Riva does NOT support – go directly to Google Translate
+    RIVA_UNSUPPORTED = {
+        "Bengali", "Gujarati", "Kannada", "Malayalam", "Marathi",
+        "Odia", "Punjabi", "Tamil", "Telugu", "Urdu"
+    }
+
+    # Google Translate language codes (used in both fallback paths)
+    GOOGLE_LANG_CODES = {
+        "English": "en", "Arabic": "ar", "Bengali": "bn", "Bulgarian": "bg",
+        "Simplified Chinese": "zh-CN", "Traditional Chinese": "zh-TW",
+        "Croatian": "hr", "Czech": "cs", "Danish": "da", "Dutch": "nl",
+        "Estonian": "et", "Finnish": "fi", "French": "fr", "German": "de",
+        "Greek": "el", "Gujarati": "gu", "Hindi": "hi", "Hungarian": "hu",
+        "Indonesian": "id", "Italian": "it", "Japanese": "ja", "Kannada": "kn",
+        "Korean": "ko", "Latvian": "lv", "Lithuanian": "lt", "Malayalam": "ml",
+        "Marathi": "mr", "Norwegian": "no", "Odia": "or", "Polish": "pl",
+        "European Portuguese": "pt", "Brazillian Portuguese": "pt",
+        "Punjabi": "pa", "Romanian": "ro", "Russian": "ru", "Slovak": "sk",
+        "Slovenian": "sl", "European Spanish": "es", "LATAM Spanish": "es",
+        "Swedish": "sv", "Tamil": "ta", "Telugu": "te", "Thai": "th",
+        "Turkish": "tr", "Ukrainian": "uk", "Urdu": "ur", "Vietnamese": "vi"
+    }
+
     def translate_text(self, text):
         """
-        Returns a tuple: (English Refined, Translated Refined)
+        Returns a tuple: (English Text, Translated Text)
+        Uses Riva NMT for supported languages, Google Translate for the rest.
         """
-        # STEP 1: Attempt Riva NMT (Primary)
-        # print(f"DEBUG: Processing Request - Text: '{text}', Target: '{self.target_language}'")
-            
+        print(f"\n=== TRANSLATE: '{text}' → [{self.target_language}] ===")
+
+        if self.target_language == "English":
+            print("  PATH: English → no translation needed")
+            return text, text
+
+        # FAST PATH: Known Riva-unsupported languages → skip Riva, use Google directly
+        if self.target_language in GestureRecognizer.RIVA_UNSUPPORTED:
+            print(f"  PATH: FAST → Google Translate for {self.target_language}")
+            result = self._google_translate_direct(text, self.target_language)
+            if result:
+                return text, result
+            # Fall through to offline dict if even Google fails
+            print("  PATH: Google failed → offline dict")
+            return text, get_offline_translation(text, self.target_language)
+
+        print(f"  PATH: Riva NMT for {self.target_language}")
+        # STEP 1: Attempt Riva NMT (Primary - fastest, highest quality)
         if self.riva_translator:
             try:
-                # 1. Translate using Riva
                 translated_text = self.riva_translator.translate(text, self.target_language)
-                
-                if translated_text:
-                    print(f"### RIVA SUCCESS ###")
-                    print(f"English: {text}")
-                    print(f"Target ({self.target_language}): {translated_text}")
-                    print(f"####################")
+                if translated_text and translated_text.strip() and translated_text != text:
+                    print(f"### RIVA SUCCESS ### {self.target_language}: {translated_text}")
                     return text, translated_text
                 else:
-                    print(f"DEBUG: Riva returned None (Unsupported language?). Fallback to offline.")
+                    print(f"DEBUG: Riva returned unchanged text. Using Google Translate fallback.")
             except Exception as e:
                 print(f"!!! RIVA FAILED !!! Error: {e}")
-            
-        # STEP 2: Offline Fallback
+
+        # STEP 2: Google Translate fallback for Riva-supported languages that failed
+        result = self._google_translate_direct(text, self.target_language)
+        if result:
+            return text, result
+
+        # STEP 3: Offline Fallback (last resort)
         translated = get_offline_translation(text, self.target_language)
         return text, translated
+
+    def _google_translate_direct(self, text, target_language):
+        """Translate directly via Google Translate (deep-translator). Returns None on failure."""
+        tgt_code = GestureRecognizer.GOOGLE_LANG_CODES.get(target_language)
+        print(f"  Google Translate: lang={target_language}, code={tgt_code}")
+        if not tgt_code:
+            print(f"  Google Translate: ERROR - No code found for '{target_language}'")
+            return None
+        try:
+            from deep_translator import GoogleTranslator
+            print(f"  Google Translate: calling API... '{text}' → {tgt_code}")
+            result = GoogleTranslator(source="en", target=tgt_code).translate(text)
+            print(f"  Google Translate: API result = '{result}'")
+            if result and result.strip():
+                print(f"  Google Translate: SUCCESS → {result}")
+                return result
+            print(f"  Google Translate: WARNING - empty/None result")
+        except Exception as e:
+            print(f"  Google Translate: EXCEPTION - {type(e).__name__}: {e}")
+        return None
+
 
     def get_collection_stats(self):
         gesture_name = GESTURES.get(self.current_gesture_id, "Unknown")
@@ -397,60 +443,51 @@ class GestureRecognizer:
 
     def process_sentence_event(self, text):
         """
-        Finalizes a sentence event. 
-        Immediately updates basic text to UI, then spawns background job for:
-        1. Enhancement (Gemini)
-        2. Audio Generation (TTS)
+        Finalizes a sentence event.
+        Translates SYNCHRONOUSLY so translated text appears immediately,
+        then spawns background thread only for audio generation.
         """
         # 0. Pre-processing (Grammar + Custom Rules)
         text = self.text_processor.process(text)
 
-        # 1. Immediate Update (Raw Text)
-        self.last_english_sentence = text
-        self.last_sentence = text # Show raw translation first (usually English)
+        # 1. Translate SYNCHRONOUSLY (blocks ~1-2s but ensures translated text is visible immediately)
+        final_english, final_translated = self.translate_text(text)
+
+        # 2. Update state with translated text right away (visible on very next /status poll)
+        self.last_english_sentence = final_english
+        self.last_sentence = final_translated
         self.last_audio = None    # Clear old audio
-        self.last_update_id += 1  # Notify UI of new event (Version 1: Raw)
-        
-        # 2. Background Job
-        def background_pipeline():
-            final_english = text
-            final_translated = text
-            
-            # A. ENHANCEMENT (Now just Translation)
-            # Always translate (Riva or Offline)
-            final_english, final_translated = self.translate_text(text)
-            
-            # Update Text State (Thread-Safe)
+        self.last_update_id += 1  # Notify UI of new text event
+
+        print(f"Text ready: [{self.target_language}] {final_translated}")
+
+        # 3. Background Job: AUDIO ONLY (translation already done above)
+        def audio_pipeline():
+            if not final_translated.strip():
+                return
+            try:
+                tts_lang = self.target_language
+                # Use English TTS if translation didn't change the text
+                if self.target_language != "English" and final_translated == final_english:
+                    tts_lang = "English"
+
+                from src.tts import generate_audio
+                audio_data = generate_audio(final_translated, tts_lang)
+
+                with self.lock:
+                    self.last_audio = audio_data
+
+            except Exception as e:
+                print(f"Background TTS Error: {e}")
+
+            # Notify UI that audio is now available
             with self.lock:
-                self.last_english_sentence = final_english
-                self.last_sentence = final_translated
-            
-            # B. AUDIO GENERATION
-            # Only generate if not empty 
-            if final_translated.strip():
-                try:
-                    # Smart Fallback for TTS Language
-                    tts_lang = self.target_language
-                    if self.target_language != "English" and final_translated == final_english:
-                         # Fallback to English TTS if translation failed/unneeded
-                         tts_lang = "English"
-                         
-                    from src.tts import generate_audio
-                    audio_data = generate_audio(final_translated, tts_lang)
-                    
-                    with self.lock:
-                         self.last_audio = audio_data
-                except Exception as e:
-                    print(f"Background TTS Error: {e}")
-            
-            # Notify UI of completion (Version 2: Final + Audio)
-            with self.lock:
-                self.last_update_id += 1 
-            print(f"Background Update Complete: {final_translated}")
-        # Spawn Thread
-        threading.Thread(target=background_pipeline, daemon=True).start()
-        
-        return text
+                self.last_update_id += 1
+            print(f"Audio ready for: {final_translated}")
+
+        threading.Thread(target=audio_pipeline, daemon=True).start()
+
+        return final_translated
 
     def simulate_text(self, text):
         """

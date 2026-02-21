@@ -782,17 +782,27 @@
             <div class="control-group">
                 <span class="control-label">Language</span>
                 <select id="language-select" onchange="changeLanguage()">
-
                     <!-- Global -->
                     <optgroup label="🌍 Global">
                         <option value="English">English</option>
                     </optgroup>
 
-                    <!-- South Asia -->
-                    <optgroup label="🇮🇳 South Asia">
+                    <!-- Asia -->
+                    <optgroup label="🌏 Asia">
+                        <option value="Simplified Chinese">Chinese Simplified (简体中文)</option>
+                        <option value="Traditional Chinese">Chinese Traditional (繁體中文)</option>
+                        <option value="Hindi">Hindi (हिंदी)</option>
+                        <option value="Indonesian">Indonesian (Bahasa Indonesia)</option>
+                        <option value="Japanese">Japanese (日本語)</option>
+                        <option value="Korean">Korean (한국어)</option>
+                        <option value="Thai">Thai (ไทย)</option>
+                        <option value="Vietnamese">Vietnamese (Tiếng Việt)</option>
+                    </optgroup>
+
+                    <!-- India -->
+                    <optgroup label="🇮🇳 India">
                         <option value="Bengali">Bengali (বাংলা)</option>
                         <option value="Gujarati">Gujarati (ગુજરાતી)</option>
-                        <option value="Hindi">Hindi (हिंदी)</option>
                         <option value="Kannada">Kannada (ಕನ್ನಡ)</option>
                         <option value="Malayalam">Malayalam (മലയാളം)</option>
                         <option value="Marathi">Marathi (मराठी)</option>
@@ -801,21 +811,6 @@
                         <option value="Tamil">Tamil (தமிழ்)</option>
                         <option value="Telugu">Telugu (తెలుగు)</option>
                         <option value="Urdu">Urdu (اردو)</option>
-                    </optgroup>
-
-                    <!-- East Asia -->
-                    <optgroup label="🌏 East Asia">
-                        <option value="Simplified Chinese">Chinese Simplified (简体中文)</option>
-                        <option value="Traditional Chinese">Chinese Traditional (繁體中文)</option>
-                        <option value="Japanese">Japanese (日本語)</option>
-                        <option value="Korean">Korean (한국어)</option>
-                    </optgroup>
-
-                    <!-- Southeast Asia -->
-                    <optgroup label="🌴 Southeast Asia">
-                        <option value="Indonesian">Indonesian (Bahasa Indonesia)</option>
-                        <option value="Thai">Thai (ไทย)</option>
-                        <option value="Vietnamese">Vietnamese (Tiếng Việt)</option>
                     </optgroup>
 
                     <!-- Middle East -->
@@ -850,8 +845,8 @@
                         <option value="Ukrainian">Ukrainian (Українська)</option>
                     </optgroup>
 
-                    <!-- Americas -->
-                    <optgroup label="🌎 Americas">
+                    <!-- Americas & Iberia -->
+                    <optgroup label="🌎 Americas & Iberia">
                         <option value="European Spanish">Spanish (EU) (Español)</option>
                         <option value="LATAM Spanish">Spanish (LATAM) (Español)</option>
                         <option value="European Portuguese">Portuguese (EU) (Português)</option>
@@ -1117,7 +1112,20 @@
         }
 
         window.onload = function () {
-            // Init
+            // Restore language from localStorage and sync with backend
+            const savedLang = localStorage.getItem('gesturetalk_language');
+            const select = document.getElementById('language-select');
+            if (savedLang) {
+                // Find and select the saved option
+                for (let i = 0; i < select.options.length; i++) {
+                    if (select.options[i].value === savedLang) {
+                        select.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            // Always sync active language to backend on load
+            changeLanguage();
         };
 
         // --- Control Functions ---
@@ -1161,10 +1169,14 @@
 
         function changeLanguage() {
             const lang = document.getElementById('language-select').value;
+            // Save to localStorage so it persists across server restarts
+            localStorage.setItem('gesturetalk_language', lang);
             fetch('/set_language', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ language: lang })
+            }).then(() => {
+                console.log('Language set to:', lang);
             });
         }
 
@@ -1186,19 +1198,22 @@
 
         function simulateInput() {
             const input = document.getElementById('manual-input');
-            const text = input.value;
+            const text = input.value.trim();
             if (!text) return;
+
+            const lang = document.getElementById('language-select').value;
 
             fetch('/simulate_input', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: text })
+                body: JSON.stringify({ text: text, language: lang })
             })
                 .then(res => res.json())
                 .then(data => {
                     if (data.status === 'success') {
-                        console.log("Simulated:", text);
-                        input.value = ''; // Clear input
+                        console.log('Simulated:', text, 'Language:', lang);
+                        // Clear after short delay so user sees text was sent
+                        setTimeout(() => { input.value = ''; }, 1500);
                     }
                 });
         }

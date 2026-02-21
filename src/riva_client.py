@@ -7,7 +7,7 @@ class RivaTranslator:
         # Configuration from User Snippet
         self.uri = "grpc.nvcf.nvidia.com:443"
         self.function_id = "0778f2eb-b64d-45e7-acae-7dd9b9b35b4d"
-        self.api_key = "Bearer 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"
+        self.api_key = "Bearer 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"
         
         try:
             self.auth = riva.client.Auth(
@@ -30,10 +30,9 @@ class RivaTranslator:
         self.lang_map = {
             "English": "en",
             "Arabic": "ar",
-            "Bengali": "bn",
             "Bulgarian": "bg",
-            "Simplified Chinese": "zh-CN",
-            "Traditional Chinese": "zh-TW",
+            "Simplified Chinese": "zh",
+            "Traditional Chinese": "zh",
             "Croatian": "hr",
             "Czech": "cs",
             "Danish": "da",
@@ -43,44 +42,44 @@ class RivaTranslator:
             "French": "fr",
             "German": "de",
             "Greek": "el",
-            "Gujarati": "gu",
             "Hindi": "hi",
             "Hungarian": "hu",
             "Indonesian": "id",
             "Italian": "it",
             "Japanese": "ja",
-            "Kannada": "kn",
             "Korean": "ko",
             "Latvian": "lv",
             "Lithuanian": "lt",
-            "Malayalam": "ml",
-            "Marathi": "mr",
             "Norwegian": "no",
-            "Odia": "or",
             "Polish": "pl",
-            "European Portuguese": "pt-PT",
-            "Brazillian Portuguese": "pt-BR",
-            "Punjabi": "pa",
+            "European Portuguese": "pt",
+            "Brazillian Portuguese": "pt",
             "Romanian": "ro",
             "Russian": "ru",
             "Slovak": "sk",
             "Slovenian": "sl",
-            "European Spanish": "es-ES",
-            "LATAM Spanish": "es-US",
+            "European Spanish": "es",
+            "LATAM Spanish": "es",
             "Swedish": "sv",
-            "Tamil": "ta",
-            "Telugu": "te",
             "Thai": "th",
             "Turkish": "tr",
             "Ukrainian": "uk",
-            "Urdu": "ur",
-            "Vietnamese": "vi"
+            "Vietnamese": "vi",
+            "Bengali": "bn",
+            "Gujarati": "gu",
+            "Kannada": "kn",
+            "Malayalam": "ml",
+            "Marathi": "mr",
+            "Odia": "or",
+            "Punjabi": "pa",
+            "Tamil": "ta",
+            "Telugu": "te",
+            "Urdu": "ur"
         }
 
     def translate(self, text, target_language, source_language="English"):
         if not self.service:
-            print("Riva Service not initialized.")
-            return None
+            return self._google_translate(text, source_language, target_language)
 
         if target_language == source_language:
             return text
@@ -89,31 +88,51 @@ class RivaTranslator:
         tgt_code = self.lang_map.get(target_language)
 
         if not src_code or not tgt_code:
-            print(f"Riva: Unsupported language pair {source_language} -> {target_language}")
-            return None
+            print(f"Riva: Unsupported language, routing to Google Translator: {source_language} -> {target_language}")
+            return self._google_translate(text, source_language, target_language, src_code, tgt_code)
 
+        # Try Riva NMT first (fastest, highest quality)
         try:
-            # print(f"DEBUG: Riva Translating '{text}' ({src_code}->{tgt_code})")
             response = self.service.translate(
                 texts=[text],
-                model="", # Default model
+                model="",
                 source_language=src_code,
                 target_language=tgt_code,
                 future=False
             )
-            
-            if response.translations:
-                translated_text = response.translations[0].text
-                # print(f"DEBUG: Riva Result: {translated_text}")
-                return translated_text
-            return None
-
-        except grpc.RpcError as e:
-            # Catch specific errors (e.g. language not supported)
-            # print(f"Riva RPC Error: {e.details()}")
-            return None
+            if response.translations and response.translations[0].text:
+                return response.translations[0].text
+            # Riva returned empty response, fall through to Google
+            print(f"Riva returned empty response for {target_language}. Falling back to Google Translator.")
         except Exception as e:
-            print(f"Riva Error: {e}")
+            print(f"Riva Error ({target_language}): {type(e).__name__} - Falling back to Google Translator.")
+
+        # Always fall back to Google Translate if Riva fails or returns empty
+        return self._google_translate(text, source_language, target_language, src_code, tgt_code)
+
+    def _google_translate(self, text, source_language, target_language, src_code=None, tgt_code=None):
+        """Fallback translator using free Google Translate via deep-translator."""
+        print(f"Google Translator: {source_language} -> {target_language}")
+        try:
+            from deep_translator import GoogleTranslator
+
+            if src_code is None:
+                src_code = self.lang_map.get(source_language, "en")
+            if tgt_code is None:
+                tgt_code = self.lang_map.get(target_language)
+            if not tgt_code:
+                print(f"Google Translator: No code found for '{target_language}'")
+                return None
+
+            # Handle Google's specific dialect codes (zh-CN, zh-TW)
+            gt_target = tgt_code
+            if target_language == "Traditional Chinese": gt_target = "zh-TW"
+            elif target_language == "Simplified Chinese": gt_target = "zh-CN"
+
+            result = GoogleTranslator(source=src_code, target=gt_target).translate(text)
+            return result
+        except Exception as dt_e:
+            print(f"Google Translator Error: {dt_e}")
             return None
 
 class RivaTTS:
@@ -121,7 +140,7 @@ class RivaTTS:
         # Configuration (Assuming same credentials as NMT for now, or user to update)
         self.uri = "grpc.nvcf.nvidia.com:443"
         self.function_id = "0778f2eb-b64d-45e7-acae-7dd9b9b35b4d" # CHECK: Is this NMT-only or Full Riva?
-        self.api_key = "Bearer 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"
+        self.api_key = "Bearer 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"
 
         try:
             self.auth = riva.client.Auth(
@@ -132,7 +151,7 @@ class RivaTTS:
                     ("authorization", self.api_key)
                 ]
             )
-            self.service = riva.client.NeuralSpeechSynthesisClient(self.auth)
+            self.service = riva.client.SpeechSynthesisService(self.auth)
             print("SUCCESS: Connected to NVIDIA Riva TTS Service.")
         except Exception as e:
             print(f"ERROR: Failed to connect to Riva TTS: {e}")
@@ -172,7 +191,7 @@ class RivaTTS:
             
             print(f"Riva TTS: Synthesizing '{text}' with voice '{voice_name}'")
             
-            responses = self.service.synthesize(
+            resp = self.service.synthesize(
                 text,
                 voice_name=voice_name,
                 language_code=language_code,
@@ -180,13 +199,17 @@ class RivaTTS:
                 sample_rate_hz=22050
             )
             
-            # Combine audio chunks
-            audio_data = b""
-            for resp in responses:
-                audio_data += resp.audio
-                
-            return audio_data
-            
+            # synthesize() returns a single SynthesizeSpeechResponse object
+            audio_data = resp.audio
+            return audio_data if audio_data else None
+
+        except grpc.RpcError as e:
+            # PERMISSION_DENIED  → this function-id doesn't cover TTS
+            # UNIMPLEMENTED      → voice/language not available
+            code = e.code().name if hasattr(e, 'code') else str(e)
+            print(f"Riva TTS gRPC Error ({code}): {e.details() if hasattr(e, 'details') else e}")
+            print("  ↳ Falling back to gTTS / offline engine.")
+            return None
         except Exception as e:
             print(f"Riva TTS Error: {e}")
             return None
