@@ -19,3 +19,5 @@ pyttsx3
 
 # Grammar
 language-tool-python
+
+nvidia-riva-client
