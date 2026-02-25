@@ -772,14 +772,6 @@
             </div>
 
             <div class="control-group">
-                <button id="btn-collect" class="btn-warning" onclick="toggleCollection()">
-                    START COLLECTION
-                </button>
-            </div>
-
-
-
-            <div class="control-group">
                 <span class="control-label">Language</span>
                 <select id="language-select" onchange="changeLanguage()">
                     <!-- Global -->
@@ -1025,88 +1017,51 @@
                         }
                     }
 
-                    const stats = data.collection_stats;
+                    // --- LIVE MODE (Default) ---
 
-                    if (stats && stats.mode) {
-                        // --- DATA COLLECTION MODE (STRICT LAYOUT) ---
-                        if (countdownInterval) clearInterval(countdownInterval);
+                    // 1. LEFT PANEL: GESTURE BUFFER
+                    document.querySelector('.card-buffer .card-header').innerText = "Gesture Buffer";
+                    document.getElementById('buffer-text').innerText = data.buffer || "Waiting for gestures...";
+                    document.getElementById('buffer-text').className = data.buffer ? "highlight-text" : "empty-text";
 
-                        // 1. LEFT PANEL: CURRENT GESTURE
-                        document.querySelector('.card-buffer .card-header').innerText = "Current Gesture";
-                        document.getElementById('buffer-text').innerText = stats.gesture + ` (${stats.gesture_id}/${stats.total_gestures})`;
-                        document.getElementById('buffer-text').className = "highlight-text";
+                    // 2. CENTER PANEL: ENGLISH SENTENCE
+                    const englishHeader = document.querySelector('.card-english .card-header');
+                    englishHeader.childNodes[0].nodeValue = "English Sentence ";
+                    // Timer visibility managed by startCountdown/clearOutput
 
-                        // 2. CENTER PANEL: COLLECTION STATUS
-                        // Reuse 'card-english' but hide timer/translation props
-                        // Note: Using childNodes[0] assignment to preserve timer span if we returned to live mode, 
-                        // but here we just overwrite title text since we hide timer anyway.
+                    const currentEnglish = data.english_text;
+                    const validText = currentEnglish && currentEnglish !== "..." && currentEnglish !== "---" && currentEnglish !== "";
 
-                        const englishHeader = document.querySelector('.card-english .card-header');
-                        // Fix: Just hide the timer span, update the text node
-                        document.getElementById('english-timer').style.display = 'none';
-                        englishHeader.childNodes[0].nodeValue = "Collection Status";
+                    // Check for New Gesture Event
+                    if (validText && currentEnglish !== lastEnglishText) {
+                        console.log("New Gesture Detected:", currentEnglish);
+                        lastEnglishText = currentEnglish;
+                        startCountdown(); // Restart 30s timer
+                    }
 
-                        document.getElementById('english-text').innerText = stats.status;
-                        document.getElementById('english-text').className = (stats.status === "RECORDING") ? "highlight-text" : "empty-text";
+                    // If valid text exists, show it. If cleared by timer, it stays empty.
+                    if (validText) {
+                        document.getElementById('english-text').innerText = currentEnglish;
+                        document.getElementById('english-text').className = "highlight-text";
+                    }
 
-                        // 3. RIGHT PANEL: SAMPLE COUNT
-                        // Reuse 'card-translated'
-                        document.getElementById('translated-timer').style.display = 'none';
-                        document.getElementById('target-lang-label').style.display = 'none';
+                    // 3. RIGHT PANEL: TRANSLATED OUTPUT
+                    const transHeader = document.querySelector('.card-translated .card-header');
+                    transHeader.childNodes[0].nodeValue = "Translated Output (";
 
-                        const transHeader = document.querySelector('.card-translated .card-header');
-                        transHeader.childNodes[0].nodeValue = "Sample Count";
+                    document.getElementById('target-lang-label').style.display = 'inline';
+                    let targetLang = data.target_language || "English";
+                    document.getElementById('target-lang-label').innerText = targetLang + ")";
 
-                        document.getElementById('translated-text').innerText = "Samples Collected: " + stats.samples + " / 30";
+                    if (data.translated_text && data.translated_text !== "..." && data.translated_text !== "---") {
+                        document.getElementById('translated-text').innerText = data.translated_text;
                         document.getElementById('translated-text').className = "highlight-text";
+                    }
 
-                    } else {
-                        // --- LIVE MODE (Default) ---
-
-                        // 1. LEFT PANEL: GESTURE BUFFER
-                        document.querySelector('.card-buffer .card-header').innerText = "Gesture Buffer";
-                        document.getElementById('buffer-text').innerText = data.buffer || "Waiting for gestures...";
-                        document.getElementById('buffer-text').className = data.buffer ? "highlight-text" : "empty-text";
-
-                        // 2. CENTER PANEL: ENGLISH SENTENCE
-                        const englishHeader = document.querySelector('.card-english .card-header');
-                        englishHeader.childNodes[0].nodeValue = "English Sentence ";
-                        // Timer visibility managed by startCountdown/clearOutput
-
-                        const currentEnglish = data.english_text;
-                        const validText = currentEnglish && currentEnglish !== "..." && currentEnglish !== "---" && currentEnglish !== "";
-
-                        // Check for New Gesture Event
-                        if (validText && currentEnglish !== lastEnglishText) {
-                            console.log("New Gesture Detected:", currentEnglish);
-                            lastEnglishText = currentEnglish;
-                            startCountdown(); // Restart 30s timer
-                        }
-
-                        // If valid text exists, show it. If cleared by timer, it stays empty.
-                        if (validText) {
-                            document.getElementById('english-text').innerText = currentEnglish;
-                            document.getElementById('english-text').className = "highlight-text";
-                        }
-
-                        // 3. RIGHT PANEL: TRANSLATED OUTPUT
-                        const transHeader = document.querySelector('.card-translated .card-header');
-                        transHeader.childNodes[0].nodeValue = "Translated Output (";
-
-                        document.getElementById('target-lang-label').style.display = 'inline';
-                        let targetLang = data.target_language || "English";
-                        document.getElementById('target-lang-label').innerText = targetLang + ")";
-
-                        if (data.translated_text && data.translated_text !== "..." && data.translated_text !== "---") {
-                            document.getElementById('translated-text').innerText = data.translated_text;
-                            document.getElementById('translated-text').className = "highlight-text";
-                        }
-
-                        // Audio Playback
-                        if (data.audio && speechEnabled) {
-                            let audio = new Audio("data:audio/mp3;base64," + data.audio);
-                            audio.play().catch(e => console.error("Playback error:", e));
-                        }
+                    // Audio Playback
+                    if (data.audio && speechEnabled) {
+                        let audio = new Audio("data:audio/mp3;base64," + data.audio);
+                        audio.play().catch(e => console.error("Playback error:", e));
                     }
                 });
         }
@@ -1142,27 +1097,6 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enabled: speechEnabled })
             });
-        }
-
-        function toggleCollection() {
-            const btn = document.getElementById('btn-collect');
-            const isStarting = btn.innerText.includes("START");
-
-            fetch('/toggle_collection', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ enabled: isStarting })
-            });
-
-            if (isStarting) {
-                btn.innerText = "STOP COLLECTION";
-                btn.className = "btn-warning"; // Keep warning style or change to danger
-                document.getElementById('mode-text').innerText = "COLLECTION MODE";
-            } else {
-                btn.innerText = "START COLLECTION";
-                btn.className = "btn-warning"; // Reset
-                document.getElementById('mode-text').innerText = "LIVE MODE";
-            }
         }
 
 

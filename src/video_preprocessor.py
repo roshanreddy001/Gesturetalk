@@ -2,7 +2,7 @@ import numpy as np
 import math
 
 class VideoPreprocessor:
-    def __init__(self, sequence_length=10, num_features=84):
+    def __init__(self, sequence_length=10, num_features=86):
         self.sequence_length = sequence_length
         self.num_features = num_features
         self.buffer = [] # Stateful buffer for real-time inference
@@ -47,27 +47,27 @@ class VideoPreprocessor:
     def _normalize_and_extract_features(self, landmarks):
         """
         Input: Raw List of coordinates (flat).
-        Output: Normalized features + Angles/Distances.
+        Output: Normalized features + Absolute Wrist Heights.
         """
         # Handle 1 or 2 hands. Assumes 21 landmarks per hand * 2 coords = 42.
         # Structure: [Lx0, Ly0, ... Lx20, Ly20, Rx0, Ry0, ... Rx20, Ry20]
-        # or just one hand (left or right padded with zeros?)
-        # Based on inference.py, it sends left + right (84 items).
         
         data = np.array(landmarks, dtype=np.float32)
         
         # Split into Left and Right hand
         left_hand = data[0:42]
         right_hand = data[42:84]
+
+        # Extract raw Y coordinates for the wrists (Index 1 since structure is x,y,x,y)
+        # This provides "height/elevation" awareness without needing Pose tracking!
+        left_wrist_y = left_hand[1] if not np.all(left_hand == 0) else 0.0
+        right_wrist_y = right_hand[1] if not np.all(right_hand == 0) else 0.0
         
         norm_left = self._process_single_hand(left_hand)
         norm_right = self._process_single_hand(right_hand)
         
-        combined = np.concatenate([norm_left, norm_right])
-        
-        # Pad or truncate to fixed feature size if we add extra features later
-        # For now, let's stick to the normalized coordinates (42+42 = 84)
-        # TODO: Add angles/distances here if desired, improving num_features
+        # 84 normalized features + 2 raw height features = 86 features
+        combined = np.concatenate([norm_left, norm_right, [left_wrist_y, right_wrist_y]])
         
         return combined
 

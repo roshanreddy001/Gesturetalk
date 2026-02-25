@@ -3,6 +3,7 @@ import mediapipe as mp
 import csv
 import os
 import numpy as np
+import time
 
 # Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
@@ -16,7 +17,7 @@ if not os.path.exists(DATA_DIR):
 
 CSV_FILE = os.path.join(DATA_DIR, 'keypoints.csv')
 
-# --- DEFINED GESTURES (34 CLASSES) ---
+# --- DEFINED GESTURES (15 CLASSES) ---
 # Each gesture matches the ID expected by the sentence generator.
 GESTURES = {
     0: "Hello",
@@ -29,30 +30,11 @@ GESTURES = {
     7: "Help",
     8: "Stop",
     9: "Wait",
-    10: "Emergency",
-    11: "Call Doctor",
-    12: "Call Family",
-    13: "Hungry",
-    14: "Thirsty",
-    15: "Washroom",
-    16: "Happy",
-    17: "Sad",
-    18: "Angry",
-    19: "Scared",
-    20: "Tired",
-    21: "Pain",
-    22: "Fine",
-    23: "Sick",
-    24: "Medicine",
-    25: "Home",
-    26: "Friend",
-    27: "Love",
-    28: "Time",
-    29: "Where",
-    30: "Who",
-    31: "What",
-    32: "Why",
-    33: "Money"
+    10: "Hungry",
+    11: "Water",
+    12: "Pain",
+    13: "Emergency",
+    14: "Home"
 }
 
 # Add reverse mapping for easy lookup by name
@@ -138,10 +120,16 @@ def main():
     current_label_id = 0 # Start recording "Hello"
     rec_mode = False
     
+    # State tracking for automated collection
+    SAMPLES_NEEDED = 300
+    current_samples = 0
+    in_cooldown = False
+    cooldown_start = 0
+    COOLDOWN_TIME = 3.0  # seconds between gestures (gives time to switch)
+    
     print("--- DUAL HAND DATA COLLECTION ---")
-    print("Use keys 0-9 to select defined gestures.")
-    print("Press 'n' for Next Gesture, 'p' for Previous Gesture.")
-    print("Press 'SPACE' to Save Current Frame.")
+    print("Automated Collection Mode (900 samples per gesture)")
+    print("Press 'r' to Start/Pause Automated Recording.")
     print("Press 'q' to Quit.")
 
     while cap.isOpened():
@@ -168,10 +156,18 @@ def main():
                 cv2.putText(frame, label_text, coords, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         # UI Instructions
-        cv2.putText(frame, f"Target: {GESTURES[current_label_id]} (ID: {current_label_id})", (10, 30), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-        cv2.putText(frame, "Press SPACE to Save", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
-        cv2.putText(frame, "n: Next | p: Prev", (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+        if current_label_id < len(GESTURES):
+            cv2.putText(frame, f"Target: {GESTURES[current_label_id]} (ID: {current_label_id})", (10, 30), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(frame, f"Samples: {current_samples}/{SAMPLES_NEEDED}", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            
+            # Show manual next instructions
+            if current_samples >= SAMPLES_NEEDED and not rec_mode:
+                cv2.putText(frame, "DONE! Press 'n' to go to NEXT.", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+        else:
+            cv2.putText(frame, "ALL GESTURES COMPLETE!", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+            rec_mode = False
 
         cv2.imshow('Data Collection', frame)
         
@@ -182,21 +178,49 @@ def main():
             break
         elif key == ord('n'):
             current_label_id = (current_label_id + 1) % len(GESTURES)
+            current_samples = 0
+            rec_mode = False # Ensure recording doesn't auto-start
         elif key == ord('p'):
             current_label_id = (current_label_id - 1) % len(GESTURES)
+            current_samples = 0
+            rec_mode = False
         elif key == ord('r'): # Toggle Recording
-            rec_mode = not rec_mode
-            print(f"Recording: {rec_mode}")
-        elif key == 32: # SPACE
-             # Still allow single frame capture if needed, 
-             # but recommend 'r' for temporal data
-            save_instance(results, current_label_id)
+            if current_label_id < len(GESTURES) and current_samples < SAMPLES_NEEDED:
+                rec_mode = not rec_mode
+                if rec_mode:
+                    print(f"Started recording for {GESTURES[current_label_id]}")
+                    in_cooldown = True
+                    cooldown_start = time.time()
+                else:
+                    print(f"Paused recording.")
 
-        # Continuous Recording
-        if rec_mode:
-            save_instance(results, current_label_id)
-            cv2.putText(frame, "RECORDING...", (400, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+        # Automated Recording Logic
+        if rec_mode and current_label_id < len(GESTURES):
+            if in_cooldown:
+                elapsed = time.time() - cooldown_start
+                remaining = max(0, COOLDOWN_TIME - elapsed)
+                cv2.putText(frame, f"GET READY: {remaining:.1f}s", (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+                if remaining <= 0:
+                    in_cooldown = False
+            else:
+                cv2.putText(frame, "RECORDING...", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                # Save every frame directly to hit 300 samples quickly (about 10 seconds at 30 fps)
+                if results.multi_hand_landmarks and results.multi_handedness:
+                    save_instance(results, current_label_id)
+                    current_samples += 1
+
+                # Check if gesture is complete
+                if current_samples >= SAMPLES_NEEDED:
+                    print(f"Completed {SAMPLES_NEEDED} samples for {GESTURES[current_label_id]}")
+                    rec_mode = False # Stop recording to let CPU cool down
+                    if current_label_id >= len(GESTURES) - 1:
+                        print("Collection entirely finished!")
+                    else:
+                        print("Auto-paused. Take a break. Press 'n' for next gesture, then 'r' to record.")
         
+        # Update display again to show late texts
+        cv2.imshow('Data Collection', frame)
+
     cap.release()
     cv2.destroyAllWindows()
 

@@ -68,10 +68,7 @@ def status():
         last_id = getattr(recognizer, 'last_spoken_id', -1)
         
         # Check if this sentence is NEW (ID changed)
-        # AND not in collection mode
-        is_collecting = ui_state["collection_stats"]["mode"]
-        
-        if current_id != last_id and sentence_to_speak and not is_collecting:
+        if current_id != last_id and sentence_to_speak:
              if ui_state["audio"]:
                  audio_data = ui_state["audio"]
                  print(f"Sending Pre-generated Audio for: {sentence_to_speak} (ID: {current_id})")
@@ -94,10 +91,7 @@ def status():
         "audio": audio_data,
         
         # State Flags for UI Sync
-        "speech_enabled": ui_state["speech_enabled"],
-
-        # Data Collection Stats
-        "collection_stats": ui_state["collection_stats"]
+        "speech_enabled": ui_state["speech_enabled"]
     }
     return jsonify(response)
 
@@ -132,10 +126,7 @@ def toggle_speech():
 
 @app.route('/toggle_collection', methods=['POST'])
 def toggle_collection():
-    data = request.json
-    enabled = data.get('enabled', False)
-    recognizer.set_collection_mode(enabled)
-    return jsonify({"status": "success", "mode": "collection" if enabled else "live"})
+    return jsonify({"status": "error", "message": "Collection mode moved to standalone script."})
 
 @app.route('/simulate_input', methods=['POST'])
 def simulate_input():

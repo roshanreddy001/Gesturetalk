@@ -79,7 +79,7 @@ class TextProcessor:
         
         # Ensure punctuation at the end
         if text and text[-1] not in ".!?":
-            text += "."
+            text += ""
 
         return text
 

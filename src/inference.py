@@ -14,13 +14,6 @@ from src.text_processor import TextProcessor
 from src.video_preprocessor import VideoPreprocessor
 from collections import deque, Counter
 
-
-class DataCollectionState(Enum):
-    IDLE = 0
-    WARMUP = 1
-    RECORDING = 2
-    COOLDOWN = 3
-
 # Constants
 MODELS_DIR = os.path.join(os.path.dirname(__file__), '..', 'models')
 # We now use the TFLite model from the data directory (or models dir if moved)
@@ -42,30 +35,11 @@ GESTURES = {
     7: "Help",
     8: "Stop",
     9: "Wait",
-    10: "Emergency",
-    11: "Call Doctor",
-    12: "Call Family",
-    13: "Hungry",
-    14: "Thirsty",
-    15: "Washroom",
-    16: "Happy",
-    17: "Sad",
-    18: "Angry",
-    19: "Scared",
-    20: "Tired",
-    21: "Pain",
-    22: "Fine",
-    23: "Sick",
-    24: "Medicine",
-    25: "Home",
-    26: "Friend",
-    27: "Love",
-    28: "Time",
-    29: "Where",
-    30: "Who",
-    31: "What",
-    32: "Why",
-    33: "Money"
+    10: "Hungry",
+    11: "Water",
+    12: "Pain",
+    13: "Emergency",
+    14: "Home"
 }
 
 # Map Gestures to Full Sentences (for Speech)
@@ -80,30 +54,11 @@ PHRASE_MAP = {
     "Help": "Please help me",
     "Stop": "Stop",
     "Wait": "Please wait",
-    "Emergency": "This is an emergency",
-    "Call Doctor": "Please call a doctor",
-    "Call Family": "Please call my family",
     "Hungry": "I am hungry",
-    "Thirsty": "I am thirsty",
-    "Washroom": "I need to use the washroom",
-    "Happy": "I am happy",
-    "Sad": "I am feeling sad",
-    "Angry": "I am angry",
-    "Scared": "I am scared",
-    "Tired": "I am tired",
+    "Water": "I need water",
     "Pain": "I am in pain",
-    "Fine": "I am doing fine",
-    "Sick": "I am not feeling well",
-    "Medicine": "I need medicine",
-    "Home": "I want to go home",
-    "Friend": "This is my friend",
-    "Love": "I love you",
-    "Time": "What time is it",
-    "Where": "Where is it",
-    "Who": "Who is that",
-    "What": "What is this",
-    "Why": "Why is that",
-    "Money": "I need money"
+    "Emergency": "This is an emergency",
+    "Home": "I want to go home"
 }
 
 # --- Multimodal Context Helpers ---
@@ -148,6 +103,27 @@ class GestureBuffer:
         self.buffer = []
         self.last_gesture = None
         self.phrase_map = PHRASE_MAP
+        self.sequence_map = self._load_sequence_map()
+
+    def _load_sequence_map(self):
+        """Loads the pre-generated dataset mapping combinations of gestures to natural sentences."""
+        mapping = {}
+        csv_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'gesture_sentences.csv')
+        try:
+            if os.path.exists(csv_path):
+                with open(csv_path, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    next(reader) # skip header
+                    for row in reader:
+                        if len(row) >= 2:
+                            mapping[row[0]] = row[1]
+                print(f"Loaded {len(mapping)} gesture sequences from dataset.")
+            else:
+                print("Sequence map dataset not found. Using fallback join.")
+        except Exception as e:
+            print(f"Error loading sequence map: {e}")
+            
+        return mapping
 
     def add_gesture(self, gesture, emotion="Neutral", hand_count=1):
         # Trigger Sentence Finalization
@@ -168,9 +144,21 @@ class GestureBuffer:
     def finalize_sentence(self):
         if not self.buffer:
             return None
+            
+        # 1. Try exact sequence mapping
+        sequence_key = "+".join(self.buffer)
         
-        # Join with punctuation
-        sentence = ". ".join(self.buffer) + "."
+        # 2. Check if there's a predefined natural translation for this pattern
+        if sequence_key in self.sequence_map:
+            sentence = self.sequence_map[sequence_key]
+        else:
+            # Fallback: Use exact phrase map
+            phrases = [self.phrase_map.get(g, g) for g in self.buffer]
+            if len(phrases) == 1:
+                sentence = phrases[0]
+            else:
+                sentence = ". ".join(phrases) + "."
+            
         self.buffer = []
         self.last_gesture = None
         return sentence
@@ -201,7 +189,8 @@ class GestureRecognizer:
 
         # Components
         self.preprocessor = VideoPreprocessor(sequence_length=10) # Stateful buffer
-        self.prediction_buffer = deque(maxlen=5) # Smoothing buffer
+        # Increase maxlen to increase the time needed to "hold" a gesture (e.g., 20 frames = ~0.6 seconds at 30fps)
+        self.prediction_buffer = deque(maxlen=30) # Smoothing buffer
         
         self.mp_hands = mp.solutions.hands
         self.mp_face_mesh = mp.solutions.face_mesh
@@ -228,7 +217,7 @@ class GestureRecognizer:
         
         # Hands-off Trigger State
         self.last_hands_visible_time = 0
-        self.HANDS_OFF_COOLDOWN = 0.5 # Seconds
+        self.HANDS_OFF_COOLDOWN = 0.2 # Seconds
         self.sentence_triggered = False
 
         # Optimization: Frame Skipping
@@ -236,19 +225,6 @@ class GestureRecognizer:
         self.skip_frames = 0 # Process every frame for smooth video
         self.last_predicted_text = ""
         self.last_confidence = 0.0
-
-        # Data Collection State
-        self.collection_mode = False
-        self.collection_state = DataCollectionState.IDLE
-        self.current_gesture_id = 0
-        self.state_start_time = 0
-        self.samples_saved = 0
-        self.data_dir = os.path.join(os.path.dirname(__file__), '..', 'data')
-        self.csv_file = os.path.join(self.data_dir, 'keypoints.csv')
-        
-        # Ensure data directory exists
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
 
         # NVIDIA Riva Translation (Primary)
         self.riva_translator = None
@@ -357,64 +333,6 @@ class GestureRecognizer:
         return None
 
 
-    def get_collection_stats(self):
-        gesture_name = GESTURES.get(self.current_gesture_id, "Unknown")
-        status_text = self.collection_state.name
-        
-        # Add localized context to status
-        if self.collection_state == DataCollectionState.WARMUP:
-            status_text = "GET READY"
-        elif self.collection_state == DataCollectionState.RECORDING:
-            status_text = "RECORDING"
-        elif self.collection_state == DataCollectionState.COOLDOWN:
-            status_text = "NEXT GESTURE..."
-            
-        return {
-            "mode": self.collection_mode,
-            "gesture": gesture_name,
-            "samples": self.samples_saved,
-            "status": status_text,
-            "gesture_id": self.current_gesture_id,
-            "total_gestures": len(GESTURES)
-        }
-
-            
-    def set_collection_mode(self, enabled):
-        self.collection_mode = enabled
-        if enabled:
-            self.collection_state = DataCollectionState.WARMUP
-            self.current_gesture_id = 0
-            self.state_start_time = time.time()
-            self.samples_saved = 0
-            print("Starting Data Collection")
-        else:
-            self.collection_state = DataCollectionState.IDLE
-            print("Stopping Data Collection")
-
-    def save_gesture_data(self, input_vector, label_id):
-        # input_vector is a list of 84 floats
-        try:
-            row = list(input_vector) + [label_id]
-            
-            # Check if file exists to write header
-            file_exists = os.path.exists(self.csv_file)
-            
-            with open(self.csv_file, mode='a', newline='') as f:
-                writer = csv.writer(f)
-                if not file_exists:
-                    header = []
-                    for i in range(21): header.extend([f'lx{i}', f'ly{i}'])
-                    for i in range(21): header.extend([f'rx{i}', f'ry{i}'])
-                    header.append('label')
-                    writer.writerow(header)
-                
-                writer.writerow(row)
-            # print(f"Saved sample for gesture {label_id}") # Uncomment for verbose logging
-            return True
-        except Exception as e:
-            print(f"Error saving data: {e}")
-            return False
-
     def set_speech_enabled(self, enabled):
         self.speech_enabled = enabled
         print(f"Speech Enabled: {self.speech_enabled}")
@@ -429,8 +347,7 @@ class GestureRecognizer:
                 "audio": self.last_audio,
                 "target_language": self.target_language,
                 "speech_enabled": self.speech_enabled,
-                "buffer": self.gesture_buffer.get_current_buffer(),
-                "collection_stats": self.get_collection_stats()
+                "buffer": self.gesture_buffer.get_current_buffer()
             }
 
     def set_mode(self, mode):
@@ -511,77 +428,6 @@ class GestureRecognizer:
         # 2. Hand Analysis
         results = self.hands.process(rgb_frame)
 
-        # DATA COLLECTION OVERRIDE
-        if self.collection_mode:
-            current_time = time.time()
-            elapsed = current_time - self.state_start_time
-            gesture_name = GESTURES.get(self.current_gesture_id, "Unknown")
-            
-            overlay_text = f"COLLECTION MODE\nGesture: {gesture_name} ({self.current_gesture_id}/{len(GESTURES)-1})"
-            
-            if self.collection_state == DataCollectionState.WARMUP:
-                countdown = 3 - int(elapsed)
-                overlay_text += f"\n\nGET READY...\n{countdown}"
-                if elapsed >= 3:
-                    self.collection_state = DataCollectionState.RECORDING
-                    self.state_start_time = current_time
-                    self.samples_saved = 0
-                    
-            elif self.collection_state == DataCollectionState.RECORDING:
-                overlay_text += f"\n\nRECORDING...\nSamples: {self.samples_saved}"
-                
-                # Logic Loop for recording
-                if results.multi_hand_landmarks and results.multi_handedness:
-                    # Visual Feedback: Draw Landmarks during collection
-                    for hand_landmarks in results.multi_hand_landmarks:
-                        self.mp_drawing.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
-
-                    left_hand_data = [0.0] * 42
-                    right_hand_data = [0.0] * 42
-                    
-                    for idx, hand_handedness in enumerate(results.multi_handedness):
-                        hand_label = hand_handedness.classification[0].label
-                        landmarks = results.multi_hand_landmarks[idx]
-                        
-                        flat_landmarks = []
-                        for lm in landmarks.landmark:
-                            flat_landmarks.append(lm.x)
-                            flat_landmarks.append(lm.y)
-                        
-                        if hand_label == "Left":
-                            left_hand_data = flat_landmarks
-                        else:
-                            right_hand_data = flat_landmarks
-                            
-                    input_vector = left_hand_data + right_hand_data
-                    
-                    # Save data (throttle if needed, but here we take every processed frame)
-                    if any(v != 0 for v in input_vector):
-                        self.save_gesture_data(input_vector, self.current_gesture_id)
-                        self.samples_saved += 1
-                
-                # Check for completion (either time or sample count)
-                # Using 30 seconds as requested
-                if elapsed >= 30:
-                    self.collection_state = DataCollectionState.COOLDOWN
-                    self.state_start_time = current_time
-                    
-            elif self.collection_state == DataCollectionState.COOLDOWN:
-                overlay_text += f"\n\nNEXT GESTURE IN...\n{2 - int(elapsed)}"
-                if elapsed >= 2:
-                    self.current_gesture_id += 1
-                    if self.current_gesture_id >= len(GESTURES):
-                        self.collection_mode = False
-                        self.collection_state = DataCollectionState.IDLE
-                        overlay_text = "COLLECTION COMPLETE!"
-                    else:
-                        self.collection_state = DataCollectionState.WARMUP
-                        self.state_start_time = current_time
-
-            self.last_predicted_text = overlay_text
-            self.last_confidence = 1.0
-            return frame, overlay_text, 1.0
-
         # Standard Prediction Logic
         predicted_text = f"Mode: {self.mode.upper()}"
         if self.mode == "live" and self.gesture_buffer.buffer:
@@ -633,7 +479,7 @@ class GestureRecognizer:
                         class_id = np.argmax(output_data[0])
                         conf = float(output_data[0][class_id])
                         
-                        if conf > 0.6: # Lower threshold, rely on smoothing
+                        if conf > 0.8: # Require 80%+ accuracy confidence to even consider the frame
                             self.prediction_buffer.append(class_id)
                         else:
                             # If low confidence, maybe append None or keep existing buffer?
@@ -645,8 +491,8 @@ class GestureRecognizer:
                             counts = Counter(self.prediction_buffer)
                             most_common_id, count = counts.most_common(1)[0]
                             
-                            # Require 3/5 consistency
-                            if count >= 3:
+                            # Require at least 70% consistency across the buffer (14 out of 20 frames)
+                            if count >= int(self.prediction_buffer.maxlen * 0.7):
                                 current_gesture = GESTURES.get(most_common_id, "Unknown")
                                 confidence = conf
                                 
